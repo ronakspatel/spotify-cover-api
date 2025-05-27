@@ -1,72 +1,68 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
 import requests
-import time
-
-# Load environment variables from .env
-load_dotenv()
-
-SPOTIFY_CLIENT_ID = os.getenv("CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-
-# Caching access token
-cached_token = None
-token_expiry = 0
+import base64
 
 app = FastAPI()
 
-def get_access_token():
-    global cached_token, token_expiry
-    current_time = time.time()
-    if cached_token and current_time < token_expiry:
-        return cached_token
+# Enable CORS if needed (e.g., for front-end to access)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    token_url = "https://accounts.spotify.com/api/token"
-    response = requests.post(
-        token_url,
-        data={"grant_type": "client_credentials"},
-        auth=(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET),
-    )
+# Load environment variables
+load_dotenv()
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Failed to get access token")
+def get_spotify_token():
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Missing Spotify credentials in .env")
 
-    data = response.json()
-    cached_token = data["access_token"]
-    token_expiry = current_time + data["expires_in"] - 60  # Refresh 1 minute early
+    auth_str = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    b64_auth_str = base64.b64encode(auth_str.encode()).decode()
 
-    return cached_token
-
-@app.get("/album-art")
-def get_album_art(title: str, artist: str):
-    token = get_access_token()
     headers = {
-        "Authorization": f"Bearer {token}"
+        "Authorization": f"Basic {b64_auth_str}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {
+        "grant_type": "client_credentials"
     }
 
-    query = f"track:{title} artist:{artist}"
-    response = requests.get(
-        "https://api.spotify.com/v1/search",
-        headers=headers,
-        params={"q": query, "type": "track", "limit": 1}
-    )
-
+    response = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
     if response.status_code != 200:
-        raise HTTPException(status_code=response.status_code, detail="Spotify API error")
+        raise HTTPException(status_code=500, detail="Failed to authenticate with Spotify")
+    
+    return response.json()["access_token"]
 
-    results = response.json()["tracks"]["items"]
+@app.get("/cover")
+def get_album_cover(track: str, artist: str):
+    token = get_spotify_token()
+
+    search_url = "https://api.spotify.com/v1/search"
+    query = f"track:{track} artist:{artist}"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"q": query, "type": "track", "limit": 1}
+
+    response = requests.get(search_url, headers=headers, params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Spotify search failed")
+
+    results = response.json().get("tracks", {}).get("items")
     if not results:
-        raise HTTPException(status_code=404, detail="Track not found")
+        raise HTTPException(status_code=404, detail="No track found")
 
-    track = results[0]
-    album = track["album"]
-    image_url = album["images"][0]["url"]
-
-    return JSONResponse({
-        "track": track["name"],
-        "artist": artist,
+    album = results[0]["album"]
+    return {
+        "track": results[0]["name"],
+        "artist": results[0]["artists"][0]["name"],
         "album": album["name"],
-        "image_url": image_url
-    })
+        "cover_url": album["images"][0]["url"]  # typically 640x640
+    }
