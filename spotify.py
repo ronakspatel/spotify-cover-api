@@ -64,5 +64,6 @@ def get_album_cover(track: str, artist: str):
         "track": results[0]["name"],
         "artist": results[0]["artists"][0]["name"],
         "album": album["name"],
-        "cover_url": album["images"][0]["url"]  # typically 640x640
+        "cover_url": album["images"][0]["url"],  # typically 640x640
+        "duration_ms": results["duration_ms"]
     }
