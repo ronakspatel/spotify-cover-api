@@ -7,7 +7,6 @@ import base64
 
 app = FastAPI()
 
-# Enable CORS if needed (e.g., for front-end to access)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load environment variables
 load_dotenv()
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
@@ -32,20 +30,17 @@ def get_spotify_token():
         "Authorization": f"Basic {b64_auth_str}",
         "Content-Type": "application/x-www-form-urlencoded"
     }
-    data = {
-        "grant_type": "client_credentials"
-    }
+    data = {"grant_type": "client_credentials"}
 
     response = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail="Failed to authenticate with Spotify")
-    
+
     return response.json()["access_token"]
 
 @app.get("/cover")
 def get_album_cover(track: str, artist: str):
     token = get_spotify_token()
-
     search_url = "https://api.spotify.com/v1/search"
     query = f"track:{track} artist:{artist}"
     headers = {"Authorization": f"Bearer {token}"}
@@ -59,11 +54,12 @@ def get_album_cover(track: str, artist: str):
     if not results:
         raise HTTPException(status_code=404, detail="No track found")
 
-    album = results[0]["album"]
+    track_data = results[0]
+    album = track_data["album"]
     return {
-        "track": results[0]["name"],
-        "artist": results[0]["artists"][0]["name"],
+        "track": track_data["name"],
+        "artist": track_data["artists"][0]["name"],
         "album": album["name"],
-        "cover_url": album["images"][0]["url"],  # typically 640x640
-        "duration_ms": results["duration_ms"]
+        "cover_url": album["images"][0]["url"],
+        "duration_ms": track_data["duration_ms"]
     }
