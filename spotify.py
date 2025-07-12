@@ -1,6 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
+from PIL import Image
+from io import BytesIO
 import os
 import requests
 import base64
@@ -38,8 +41,8 @@ def get_spotify_token():
 
     return response.json()["access_token"]
 
-@app.get("/cover")
-def get_album_cover(track: str, artist: str):
+@app.get("/cover.bmp")
+def get_album_cover_bmp(track: str = Query(...), artist: str = Query(...)):
     token = get_spotify_token()
     search_url = "https://api.spotify.com/v1/search"
     query = f"track:{track} artist:{artist}"
@@ -54,12 +57,18 @@ def get_album_cover(track: str, artist: str):
     if not results:
         raise HTTPException(status_code=404, detail="No track found")
 
-    track_data = results[0]
-    album = track_data["album"]
-    return {
-        "track": track_data["name"],
-        "artist": track_data["artists"][0]["name"],
-        "album": album["name"],
-        "cover_url": album["images"][0]["url"],
-        "duration_ms": track_data["duration_ms"]
-    }
+    cover_url = results[0]["album"]["images"][0]["url"]
+
+    # Download and convert the image
+    try:
+        img_response = requests.get(cover_url)
+        img = Image.open(BytesIO(img_response.content)).convert("RGB")
+        img = img.resize((128, 128), Image.LANCZOS)
+
+        bmp_io = BytesIO()
+        img.save(bmp_io, format="BMP")
+        bmp_io.seek(0)
+
+        return StreamingResponse(bmp_io, media_type="image/bmp")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process album art: {e}")
