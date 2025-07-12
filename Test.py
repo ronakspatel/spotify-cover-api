@@ -1,42 +1,78 @@
-import requests
-from urllib.parse import quote
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from dotenv import load_dotenv
 from PIL import Image
 from io import BytesIO
+import os
+import requests
+import base64
 
-def get_album_art(track, artist, api_base_url):
-    query = f"{api_base_url}?track={quote(track)}&artist={quote(artist)}"
-    response = requests.get(query)
+app = FastAPI()
 
-    if response.status_code == 200:
-        try:
-            data = response.json()
-            cover_url = data.get("cover_url")
-            if not cover_url:
-                print("No 'cover_url' in response.")
-                return None
-            
-            # Fetch the actual image
-            image_response = requests.get(cover_url)
-            if image_response.status_code == 200:
-                img = Image.open(BytesIO(image_response.content))
-                img = img.resize((128, 128), Image.Resampling.LANCZOS)  # Use modern Pillow resampling
-                return img
-            else:
-                print(f"Failed to fetch image: {image_response.status_code}")
-                return None
-        except Exception as e:
-            print("Error parsing JSON or fetching image:", e)
-            return None
-    else:
-        print(f"API error {response.status_code}: {response.text}")
-        return None
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ==== Test the API ====
-if __name__ == "__main__":
-    api_url = "https://spotify-cover-api.onrender.com/cover"
-    track = input("Enter track title: ")
-    artist = input("Enter artist name: ")
+load_dotenv()
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
-    album_cover = get_album_art(track, artist, api_url)
-    if album_cover:
-        album_cover.show()
+def get_spotify_token():
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Missing Spotify credentials in .env")
+
+    auth_str = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    b64_auth_str = base64.b64encode(auth_str.encode()).decode()
+
+    headers = {
+        "Authorization": f"Basic {b64_auth_str}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {"grant_type": "client_credentials"}
+
+    response = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to authenticate with Spotify")
+
+    return response.json()["access_token"]
+
+@app.get("/cover.bmp")
+def get_album_cover_bmp(track: str = Query(...), artist: str = Query(...)):
+    token = get_spotify_token()
+    search_url = "https://api.spotify.com/v1/search"
+    query = f"track:{track} artist:{artist}"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"q": query, "type": "track", "limit": 1}
+
+    response = requests.get(search_url, headers=headers, params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Spotify search failed")
+
+    results = response.json().get("tracks", {}).get("items")
+    if not results:
+        raise HTTPException(status_code=404, detail="No track found")
+
+    cover_url = results[0]["album"]["images"][0]["url"]
+
+    try:
+        img_response = requests.get(cover_url)
+        if img_response.status_code != 200:
+            raise HTTPException(status_code=img_response.status_code, detail="Failed to fetch album cover")
+
+        img = Image.open(BytesIO(img_response.content)).convert("RGB")
+        img = img.resize((128, 128), Image.LANCZOS)
+
+        # Save as 24-bit BMP with no compression (standard Windows BMP)
+        bmp_io = BytesIO()
+        img.save(bmp_io, format="BMP")
+        bmp_io.seek(0)
+
+        return StreamingResponse(bmp_io, media_type="image/bmp")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process album art: {e}")
