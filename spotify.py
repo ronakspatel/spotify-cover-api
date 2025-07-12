@@ -7,6 +7,7 @@ from io import BytesIO
 import os
 import requests
 import base64
+import struct
 
 app = FastAPI()
 
@@ -41,8 +42,8 @@ def get_spotify_token():
 
     return response.json()["access_token"]
 
-@app.get("/cover.bmp")
-def get_album_cover_bmp(track: str = Query(...), artist: str = Query(...)):
+@app.get("/cover.rgb565")
+def get_album_cover_rgb565(track: str = Query(...), artist: str = Query(...)):
     token = get_spotify_token()
     search_url = "https://api.spotify.com/v1/search"
     query = f"track:{track} artist:{artist}"
@@ -59,16 +60,19 @@ def get_album_cover_bmp(track: str = Query(...), artist: str = Query(...)):
 
     cover_url = results[0]["album"]["images"][0]["url"]
 
-    # Download and convert the image
     try:
         img_response = requests.get(cover_url)
         img = Image.open(BytesIO(img_response.content)).convert("RGB")
         img = img.resize((128, 128), Image.LANCZOS)
 
-        bmp_io = BytesIO()
-        img.save(bmp_io, format="BMP")
-        bmp_io.seek(0)
+        buf = BytesIO()
+        for y in range(128):
+            for x in range(128):
+                r, g, b = img.getpixel((x, y))
+                rgb565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                buf.write(struct.pack(">H", rgb565))  # Big-endian 16-bit
 
-        return StreamingResponse(bmp_io, media_type="image/bmp")
+        buf.seek(0)
+        return StreamingResponse(buf, media_type="application/octet-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process album art: {e}")
